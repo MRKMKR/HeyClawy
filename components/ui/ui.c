@@ -123,6 +123,9 @@ static lv_obj_t *s_scr = NULL;
 
 /* Status bar (top) */
 static lv_obj_t *s_status_bar = NULL;
+static lv_obj_t *s_status_chip_left = NULL;
+static lv_obj_t *s_status_chip_center = NULL;
+static lv_obj_t *s_status_chip_right = NULL;
 static lv_obj_t *s_wifi_label = NULL;
 static lv_obj_t *s_oc_dot = NULL;
 static lv_obj_t *s_batt_label = NULL;
@@ -174,6 +177,27 @@ static EventGroupHandle_t s_events = NULL;
 #define UI_CANCEL_BIT          BIT6
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
+
+static lv_obj_t *create_status_chip(lv_obj_t *parent, lv_coord_t w, lv_coord_t h)
+{
+    lv_obj_t *chip = lv_obj_create(parent);
+    lv_obj_set_size(chip, w, h);
+    lv_obj_set_style_bg_color(chip, C_BAR_BG, 0);
+    lv_obj_set_style_bg_opa(chip, LV_OPA_80, 0);
+    lv_obj_set_style_radius(chip, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(chip, 1, 0);
+    lv_obj_set_style_border_color(chip, C_BORDER, 0);
+    lv_obj_set_style_border_opa(chip, LV_OPA_40, 0);
+    lv_obj_set_style_pad_hor(chip, 10, 0);
+    lv_obj_set_style_pad_ver(chip, 3, 0);
+    lv_obj_set_style_shadow_width(chip, 12, 0);
+    lv_obj_set_style_shadow_opa(chip, LV_OPA_20, 0);
+    lv_obj_set_style_shadow_color(chip, lv_color_hex(0x000000), 0);
+    lv_obj_set_flex_flow(chip, LV_FLEX_FLOW_ROW);
+    lv_obj_set_flex_align(chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
+    return chip;
+}
 
 /* Check if a 2-byte UTF-8 character is in the Latin range renderable by Montserrat.
  * Montserrat covers: Basic Latin (ASCII), Latin-1 Supplement (U+0080-U+00FF),
@@ -756,31 +780,34 @@ esp_err_t ui_init(void)
     lv_obj_set_style_bg_opa(s_scr, LV_OPA_COVER, 0);
     lv_obj_clear_flag(s_scr, LV_OBJ_FLAG_SCROLLABLE); /* prevent scroll from canceling button clicks */
 
-    /* ── Status bar (top, arc-aligned to circular display) ── */
+    /* ── Status chips (top, offset along the round display arc) ── */
     s_status_bar = lv_obj_create(s_scr);
-    lv_obj_set_size(s_status_bar, 240, 30);
-    lv_obj_align(s_status_bar, LV_ALIGN_TOP_MID, 0, 30);
-    lv_obj_set_style_bg_color(s_status_bar, C_BAR_BG, 0);
-    lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_80, 0);
-    lv_obj_set_style_radius(s_status_bar, LV_RADIUS_CIRCLE, 0);
-    lv_obj_set_style_border_width(s_status_bar, 1, 0);
-    lv_obj_set_style_border_color(s_status_bar, C_BORDER, 0);
-    lv_obj_set_style_border_opa(s_status_bar, LV_OPA_40, 0);
-    lv_obj_set_style_pad_hor(s_status_bar, 12, 0);
-    lv_obj_set_style_pad_ver(s_status_bar, 3, 0);
-    lv_obj_set_flex_flow(s_status_bar, LV_FLEX_FLOW_ROW);
-    lv_obj_set_flex_align(s_status_bar, LV_FLEX_ALIGN_SPACE_BETWEEN,
-                          LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+    lv_obj_set_size(s_status_bar, 412, 84);
+    lv_obj_align(s_status_bar, LV_ALIGN_TOP_MID, 0, 0);
+    lv_obj_set_style_bg_opa(s_status_bar, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_status_bar, 0, 0);
+    lv_obj_set_style_pad_all(s_status_bar, 0, 0);
     lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_CLICKABLE);
+
+    s_status_chip_left = create_status_chip(s_status_bar, 56, 28);
+    lv_obj_set_pos(s_status_chip_left, 88, 31);
+
+    s_status_chip_center = create_status_chip(s_status_bar, 82, 30);
+    lv_obj_set_pos(s_status_chip_center, 165, 16);
+    lv_obj_set_style_pad_column(s_status_chip_center, 6, 0);
+
+    s_status_chip_right = create_status_chip(s_status_bar, 56, 28);
+    lv_obj_set_pos(s_status_chip_right, 268, 31);
 
     /* WiFi icon */
-    s_wifi_label = lv_label_create(s_status_bar);
+    s_wifi_label = lv_label_create(s_status_chip_left);
     lv_label_set_text(s_wifi_label, LV_SYMBOL_WIFI);
     lv_obj_set_style_text_color(s_wifi_label, C_TEXT_DIM, 0);
     lv_obj_set_style_text_font(s_wifi_label, &lv_font_montserrat_14, 0);
 
     /* OC status dot */
-    s_oc_dot = lv_obj_create(s_status_bar);
+    s_oc_dot = lv_obj_create(s_status_chip_center);
     lv_obj_set_size(s_oc_dot, 10, 10);
     lv_obj_set_style_radius(s_oc_dot, LV_RADIUS_CIRCLE, 0);
     lv_obj_set_style_bg_color(s_oc_dot, C_TEXT_DIM, 0);
@@ -788,13 +815,13 @@ esp_err_t ui_init(void)
     lv_obj_set_style_border_width(s_oc_dot, 0, 0);
 
     /* Battery label */
-    s_batt_label = lv_label_create(s_status_bar);
+    s_batt_label = lv_label_create(s_status_chip_right);
     lv_label_set_text(s_batt_label, LV_SYMBOL_BATTERY_FULL);
     lv_obj_set_style_text_color(s_batt_label, C_TEXT_DIM, 0);
     lv_obj_set_style_text_font(s_batt_label, &lv_font_montserrat_14, 0);
 
     /* Web server indicator */
-    s_web_label = lv_label_create(s_status_bar);
+    s_web_label = lv_label_create(s_status_chip_center);
     lv_label_set_text(s_web_label, "");
     lv_obj_set_style_text_color(s_web_label, C_TEXT_DIM, 0);
     lv_obj_set_style_text_font(s_web_label, &lv_font_montserrat_14, 0);
