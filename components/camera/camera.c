@@ -16,6 +16,7 @@ static const char *TAG = "camera";
 /* Stubs for boards without camera */
 esp_err_t camera_init(void) { ESP_LOGI(TAG, "No camera on this board"); return ESP_OK; }
 esp_err_t camera_capture_jpeg(uint8_t **jpeg_out, size_t *jpeg_size) { (void)jpeg_out; (void)jpeg_size; return ESP_ERR_NOT_SUPPORTED; }
+esp_err_t camera_check_presence(bool *present, int *best_score) { if (present) *present = false; if (best_score) *best_score = 0; return ESP_ERR_NOT_SUPPORTED; }
 bool camera_is_ready(void) { return false; }
 void camera_deinit(void) {}
 #else /* BOARD_HAS_CAMERA */
@@ -36,6 +37,63 @@ static bool s_initialized = false;
 static uint8_t *s_captured_jpeg = NULL;
 static size_t s_captured_size = 0;
 static SemaphoreHandle_t s_capture_sem = NULL;
+static SemaphoreHandle_t s_presence_sem = NULL;
+static SemaphoreHandle_t s_camera_mutex = NULL;
+static bool s_presence_detected = false;
+static int s_presence_score = 0;
+
+static bool has_presence_labels(void)
+{
+    if (!s_sscma_client) return false;
+
+    for (int i = 0; i < SSCMA_CLIENT_MODEL_MAX_CLASSES; i++) {
+        const char *label = s_sscma_client->model.classes[i];
+        if (!label || !label[0]) continue;
+        if (strstr(label, "face") != NULL || strstr(label, "person") != NULL) {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+static bool is_presence_target(uint8_t target)
+{
+    if (!s_sscma_client) return false;
+
+    const char *label = NULL;
+    if (target < SSCMA_CLIENT_MODEL_MAX_CLASSES) {
+        label = s_sscma_client->model.classes[target];
+    }
+
+    if (!label || !label[0]) {
+        return false;
+    }
+
+    return strstr(label, "face") != NULL || strstr(label, "person") != NULL;
+}
+
+static bool box_looks_like_presence(const sscma_client_box_t *box, bool require_labeled_target)
+{
+    if (!box) return false;
+
+    if (require_labeled_target && !is_presence_target(box->target)) {
+        return false;
+    }
+
+    uint32_t area = (uint32_t)box->w * (uint32_t)box->h;
+
+    /* Unlabeled models need stronger guards to avoid false wakeups. */
+    if (!require_labeled_target) {
+        if (box->score < 70) return false;
+        if (area < 1800) return false;
+        return true;
+    }
+
+    if (box->score < 75) return false;
+    if (area < 900) return false;
+    return true;
+}
 
 // Callback for SSCMA events — receives image data
 static void sscma_on_event(sscma_client_handle_t client, const sscma_client_reply_t *reply, void *user_ctx)
@@ -91,6 +149,38 @@ static void sscma_on_event(sscma_client_handle_t client, const sscma_client_repl
         // Signal capture complete
         if (s_capture_sem) {
             xSemaphoreGive(s_capture_sem);
+        }
+    }
+
+    sscma_client_box_t *boxes = NULL;
+    int num_boxes = 0;
+    ret = sscma_utils_fetch_boxes_from_reply(reply, &boxes, &num_boxes);
+    if (ret == ESP_OK) {
+        bool present = false;
+        int best_score = 0;
+        bool require_labeled_target = has_presence_labels();
+
+        if (boxes != NULL && num_boxes > 0) {
+            for (int i = 0; i < num_boxes; i++) {
+                uint32_t area = (uint32_t)boxes[i].w * (uint32_t)boxes[i].h;
+                ESP_LOGI(TAG, "Presence box[%d]: score=%u target=%u x=%u y=%u w=%u h=%u area=%lu labeled=%d",
+                         i, boxes[i].score, boxes[i].target, boxes[i].x, boxes[i].y,
+                         boxes[i].w, boxes[i].h, (unsigned long)area, require_labeled_target ? 1 : 0);
+                if (boxes[i].score > best_score) best_score = boxes[i].score;
+                if (box_looks_like_presence(&boxes[i], require_labeled_target)) {
+                    present = true;
+                }
+            }
+            free(boxes);
+        } else {
+            ESP_LOGI(TAG, "Presence invoke returned no boxes");
+        }
+
+        s_presence_detected = present;
+        s_presence_score = best_score;
+
+        if (s_presence_sem) {
+            xSemaphoreGive(s_presence_sem);
         }
     }
 }
@@ -170,6 +260,8 @@ esp_err_t camera_init(void)
 
     // Create capture semaphore
     s_capture_sem = xSemaphoreCreateBinary();
+    s_presence_sem = xSemaphoreCreateBinary();
+    s_camera_mutex = xSemaphoreCreateMutex();
 
     // Log AI chip info
     sscma_client_info_t *info = NULL;
@@ -190,6 +282,9 @@ esp_err_t camera_capture_jpeg(uint8_t **jpeg_out, size_t *jpeg_size)
     if (!jpeg_out || !jpeg_size) {
         return ESP_ERR_INVALID_ARG;
     }
+    if (!s_camera_mutex || xSemaphoreTake(s_camera_mutex, pdMS_TO_TICKS(1000)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
 
     // Clear previous capture
     if (s_captured_jpeg) {
@@ -205,17 +300,20 @@ esp_err_t camera_capture_jpeg(uint8_t **jpeg_out, size_t *jpeg_size)
     esp_err_t ret = sscma_client_sample(s_sscma_client, 1);
     if (ret != ESP_OK) {
         ESP_LOGE(TAG, "SSCMA sample request failed: %s", esp_err_to_name(ret));
+        xSemaphoreGive(s_camera_mutex);
         return ret;
     }
 
     // Wait for callback with image data (timeout 5s)
     if (xSemaphoreTake(s_capture_sem, pdMS_TO_TICKS(5000)) != pdTRUE) {
         ESP_LOGE(TAG, "Camera capture timeout");
+        xSemaphoreGive(s_camera_mutex);
         return ESP_ERR_TIMEOUT;
     }
 
     if (s_captured_jpeg == NULL || s_captured_size == 0) {
         ESP_LOGE(TAG, "No image data received");
+        xSemaphoreGive(s_camera_mutex);
         return ESP_ERR_NOT_FOUND;
     }
 
@@ -226,6 +324,45 @@ esp_err_t camera_capture_jpeg(uint8_t **jpeg_out, size_t *jpeg_size)
     s_captured_size = 0;
 
     ESP_LOGI(TAG, "Capture complete: %d bytes JPEG", (int)*jpeg_size);
+    xSemaphoreGive(s_camera_mutex);
+    return ESP_OK;
+}
+
+esp_err_t camera_check_presence(bool *present, int *best_score)
+{
+    if (present) *present = false;
+    if (best_score) *best_score = 0;
+
+    if (!s_initialized || !s_sscma_client) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (!s_camera_mutex || !s_presence_sem) {
+        return ESP_ERR_INVALID_STATE;
+    }
+    if (xSemaphoreTake(s_camera_mutex, pdMS_TO_TICKS(200)) != pdTRUE) {
+        return ESP_ERR_TIMEOUT;
+    }
+
+    s_presence_detected = false;
+    s_presence_score = 0;
+    xSemaphoreTake(s_presence_sem, 0);
+
+    esp_err_t ret = sscma_client_invoke(s_sscma_client, 1, false, false);
+    if (ret != ESP_OK) {
+        ESP_LOGW(TAG, "Presence invoke failed: %s", esp_err_to_name(ret));
+        xSemaphoreGive(s_camera_mutex);
+        return ret;
+    }
+
+    if (xSemaphoreTake(s_presence_sem, pdMS_TO_TICKS(1500)) != pdTRUE) {
+        ESP_LOGW(TAG, "Presence invoke timed out");
+        xSemaphoreGive(s_camera_mutex);
+        return ESP_ERR_TIMEOUT;
+    }
+
+    if (present) *present = s_presence_detected;
+    if (best_score) *best_score = s_presence_score;
+    xSemaphoreGive(s_camera_mutex);
     return ESP_OK;
 }
 
@@ -243,6 +380,14 @@ void camera_deinit(void)
     if (s_capture_sem) {
         vSemaphoreDelete(s_capture_sem);
         s_capture_sem = NULL;
+    }
+    if (s_presence_sem) {
+        vSemaphoreDelete(s_presence_sem);
+        s_presence_sem = NULL;
+    }
+    if (s_camera_mutex) {
+        vSemaphoreDelete(s_camera_mutex);
+        s_camera_mutex = NULL;
     }
     if (s_captured_jpeg) {
         free(s_captured_jpeg);

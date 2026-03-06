@@ -35,7 +35,7 @@ static void apply_bare_defaults(settings_t *s)
     s->brightness          = 100;
     s->rgb_enabled         = true;
     s->startup_pattern     = 0;  /* rainbow */
-    s->sleep_timeout_ms    = 60000;
+    s->sleep_timeout_ms    = 180000;
     s->wake_word_in_sleep  = false;  /* save battery by default */
     s->webserver_enabled   = false;
     s->activity_carousel   = true;

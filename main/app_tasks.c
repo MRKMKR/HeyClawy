@@ -12,6 +12,7 @@
 #include <sys/time.h>
 
 #include "board.h"
+#include "camera.h"
 #include "openclaw_client.h"
 #include "wifi_manager.h"
 #include "tts_client.h"
@@ -41,6 +42,7 @@ char g_tts_text[1024] = {0};
 
 /* Forward declaration */
 static void enter_deep_sleep(void);  /* internal — called from knob_task */
+static void presence_task(void *arg);
 
 /* ── Knob monitoring — long press detection + cancel ──────────────────── */
 #define LONG_PRESS_MS 4000
@@ -779,12 +781,76 @@ static void sleep_task(void *arg)
     }
 }
 
+static void presence_task(void *arg)
+{
+#if !BOARD_HAS_CAMERA
+    (void)arg;
+    vTaskDelete(NULL);
+#else
+    bool warned_unavailable = false;
+    bool was_present = false;
+    int consecutive_hits = 0;
+    int consecutive_misses = 0;
+
+    while (1) {
+        vTaskDelay(pdMS_TO_TICKS(1500));
+
+        ui_state_t state = ui_get_state();
+        if (state == UI_STATE_LISTENING || state == UI_STATE_SENDING ||
+            state == UI_STATE_THINKING || state == UI_STATE_STREAMING ||
+            state == UI_STATE_TTS_LOADING || state == UI_STATE_TTS_PLAYING) {
+            continue;
+        }
+
+        if (!camera_is_ready()) {
+            if (camera_init() != ESP_OK) {
+                if (!warned_unavailable) {
+                    ESP_LOGW(TAG, "Presence monitor: camera model not ready");
+                    warned_unavailable = true;
+                }
+                continue;
+            }
+        }
+
+        bool present = false;
+        int score = 0;
+        esp_err_t ret = camera_check_presence(&present, &score);
+        if (ret == ESP_OK) {
+            warned_unavailable = false;
+            if (present) {
+                consecutive_hits++;
+                consecutive_misses = 0;
+            } else {
+                consecutive_hits = 0;
+                consecutive_misses++;
+            }
+
+            bool confirmed_present = consecutive_hits >= 2;
+            bool confirmed_absent = consecutive_misses >= 2;
+
+            if (confirmed_present) {
+                if (!was_present) {
+                    ESP_LOGI(TAG, "Presence confirmed (score=%d) — keeping display awake", score);
+                }
+                app_reset_activity_timer();
+                was_present = true;
+            } else if (confirmed_absent) {
+                was_present = false;
+            }
+        } else {
+            consecutive_hits = 0;
+        }
+    }
+#endif
+}
+
 /* ── Start all tasks ─────────────────────────────────────────────────── */
 void app_tasks_start(void)
 {
     xTaskCreatePinnedToCore(knob_task, "knob", 4096, NULL, 5, NULL, 0);
     xTaskCreatePinnedToCore(status_update_task, "status", 4096, NULL, 2, NULL, 0);
     xTaskCreatePinnedToCore(sleep_task, "sleep", 4096, NULL, 1, NULL, 0);
+    xTaskCreatePinnedToCore(presence_task, "presence", 4096, NULL, 1, NULL, 0);
 
     /* TTS task — PSRAM stack on S3, internal RAM on ESP32 (16KB needed for minimp3) */
 #if CONFIG_IDF_TARGET_ESP32S3

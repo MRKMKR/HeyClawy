@@ -144,6 +144,7 @@ static lv_obj_t *s_info_line2 = NULL;
 
 /* Bottom button bar */
 static lv_obj_t *s_btn_bar = NULL;
+static lv_obj_t *s_btn_dock = NULL;
 static lv_obj_t *s_play_btn = NULL;
 static lv_obj_t *s_details_btn = NULL;
 static lv_obj_t *s_web_btn = NULL;
@@ -606,6 +607,22 @@ static lv_obj_t *create_icon_btn(lv_obj_t *parent, const char *icon,
     return btn;
 }
 
+static void style_icon_btn(lv_obj_t *btn, lv_coord_t size, const lv_font_t *font,
+                           uint8_t bg_opa, uint8_t border_opa)
+{
+    if (!btn) return;
+    lv_obj_set_size(btn, size, size);
+    lv_obj_set_style_bg_opa(btn, bg_opa, 0);
+    lv_obj_set_style_border_opa(btn, border_opa, 0);
+    lv_obj_set_ext_click_area(btn, 12);
+
+    lv_obj_t *lbl = lv_obj_get_child(btn, 0);
+    if (lbl) {
+        lv_obj_set_style_text_font(lbl, font, 0);
+        lv_obj_center(lbl);
+    }
+}
+
 /* ── Init ─────────────────────────────────────────────────────────────── */
 
 /* Small-screen layout (M5StickCPlus2: 240×135) */
@@ -792,6 +809,8 @@ esp_err_t ui_init(void)
 
     s_status_chip_left = create_status_chip(s_status_bar, 56, 28);
     lv_obj_set_pos(s_status_chip_left, 88, 31);
+    lv_obj_add_event_cb(s_status_chip_left, web_btn_cb, LV_EVENT_CLICKED, NULL);
+    lv_obj_set_ext_click_area(s_status_chip_left, 10);
 
     s_status_chip_center = create_status_chip(s_status_bar, 82, 30);
     lv_obj_set_pos(s_status_chip_center, 165, 16);
@@ -825,6 +844,7 @@ esp_err_t ui_init(void)
     lv_label_set_text(s_web_label, "");
     lv_obj_set_style_text_color(s_web_label, C_TEXT_DIM, 0);
     lv_obj_set_style_text_font(s_web_label, &lv_font_montserrat_14, 0);
+    s_web_btn = s_status_chip_left;
 
     /* ── Task / progress area ── */
     s_task_label = lv_label_create(s_scr);
@@ -881,7 +901,7 @@ esp_err_t ui_init(void)
      * inset. 5 buttons at angles ±36° and ±18° from bottom center.
      * Wider spread so 44px buttons don't overlap. */
     s_btn_bar = lv_obj_create(s_scr);
-    lv_obj_set_size(s_btn_bar, 412, 120);
+    lv_obj_set_size(s_btn_bar, 412, 108);
     lv_obj_align(s_btn_bar, LV_ALIGN_BOTTOM_MID, 0, 0);
     lv_obj_set_style_bg_opa(s_btn_bar, LV_OPA_TRANSP, 0);
     lv_obj_set_style_border_width(s_btn_bar, 0, 0);
@@ -889,55 +909,46 @@ esp_err_t ui_init(void)
     lv_obj_clear_flag(s_btn_bar, LV_OBJ_FLAG_SCROLLABLE);
     lv_obj_clear_flag(s_btn_bar, LV_OBJ_FLAG_CLICKABLE); /* let clicks pass through to child buttons */
 
-    /* Button positions computed on inner circle (R=176, 30px inset).
-     * Angles from bottom center: -36°, -18°, 0°, +18°, +36°.
-     * x = 206 + R*sin(a),  y = 206 + R*cos(a) - bar_top.
-     * sin(18°)=0.309, cos(18°)=0.951, sin(36°)=0.588, cos(36°)=0.809 */
-    #define BTN_R  176
-    #define CX     206
-    #define CY     206
-    #define BAR_TOP 292  /* btn_bar top: 412 - 120 */
-    static const int btn_x[] = {
-        CX - (int)(BTN_R * 0.588f),  /* -36°: 206-103=103 */
-        CX - (int)(BTN_R * 0.309f),  /* -18°: 206-54=152 */
-        CX,                          /*   0°: 206 */
-        CX + (int)(BTN_R * 0.309f),  /* +18°: 206+54=260 */
-        CX + (int)(BTN_R * 0.588f),  /* +36°: 206+103=309 */
-    };
-    static const int btn_y[] = {
-        CY + (int)(BTN_R * 0.809f) - BAR_TOP,  /* -36°: 206+142-292=56 */
-        CY + (int)(BTN_R * 0.951f) - BAR_TOP,  /* -18°: 206+167-292=81 */
-        CY + BTN_R - BAR_TOP,                   /*   0°: 206+176-292=90 */
-        CY + (int)(BTN_R * 0.951f) - BAR_TOP,  /* +18° */
-        CY + (int)(BTN_R * 0.809f) - BAR_TOP,  /* +36° */
-    };
+    s_btn_dock = lv_obj_create(s_btn_bar);
+    lv_obj_set_size(s_btn_dock, 176, 64);
+    lv_obj_align(s_btn_dock, LV_ALIGN_BOTTOM_MID, 0, -10);
+    lv_obj_set_style_bg_color(s_btn_dock, C_BAR_BG, 0);
+    lv_obj_set_style_bg_opa(s_btn_dock, LV_OPA_80, 0);
+    lv_obj_set_style_radius(s_btn_dock, LV_RADIUS_CIRCLE, 0);
+    lv_obj_set_style_border_width(s_btn_dock, 1, 0);
+    lv_obj_set_style_border_color(s_btn_dock, C_BORDER, 0);
+    lv_obj_set_style_border_opa(s_btn_dock, LV_OPA_50, 0);
+    lv_obj_set_style_pad_all(s_btn_dock, 0, 0);
+    lv_obj_clear_flag(s_btn_dock, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_btn_dock, LV_OBJ_FLAG_CLICKABLE);
 
     /* Play button */
-    s_play_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_PLAY, C_TEAL, play_btn_cb);
-    lv_obj_set_pos(s_play_btn, btn_x[0] - 22, btn_y[0] - 22);
+    s_play_btn = create_icon_btn(s_btn_dock, LV_SYMBOL_PLAY, C_TEAL, play_btn_cb);
+    style_icon_btn(s_play_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+    lv_obj_align(s_play_btn, LV_ALIGN_LEFT_MID, 18, 0);
     lv_obj_add_flag(s_play_btn, LV_OBJ_FLAG_HIDDEN);
 
     /* Details button */
-    s_details_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_LIST, C_BLUE, details_btn_cb);
-    lv_obj_set_pos(s_details_btn, btn_x[1] - 22, btn_y[1] - 22);
+    s_details_btn = create_icon_btn(s_btn_dock, LV_SYMBOL_LIST, C_BLUE, details_btn_cb);
+    style_icon_btn(s_details_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+    lv_obj_align(s_details_btn, LV_ALIGN_RIGHT_MID, -18, 0);
     lv_obj_add_flag(s_details_btn, LV_OBJ_FLAG_HIDDEN);
 
     /* Camera button */
-    s_camera_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_IMAGE, C_ORANGE, camera_btn_cb);
-    lv_obj_set_pos(s_camera_btn, btn_x[2] - 22, btn_y[2] - 22);
+    s_camera_btn = create_icon_btn(s_btn_dock, LV_SYMBOL_IMAGE, C_ORANGE, camera_btn_cb);
+    style_icon_btn(s_camera_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+    lv_obj_align(s_camera_btn, LV_ALIGN_LEFT_MID, 18, 0);
 
     /* Cancel button (shown only during recording) */
-    s_cancel_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_CLOSE, C_RED, cancel_btn_cb);
-    lv_obj_set_pos(s_cancel_btn, btn_x[2] - 22, btn_y[2] - 22);
+    s_cancel_btn = create_icon_btn(s_btn_dock, LV_SYMBOL_CLOSE, C_RED, cancel_btn_cb);
+    style_icon_btn(s_cancel_btn, 60, &lv_font_montserrat_20, LV_OPA_COVER, LV_OPA_70);
+    lv_obj_align(s_cancel_btn, LV_ALIGN_CENTER, 0, 0);
     lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
 
-    /* Web server button */
-    s_web_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_WIFI, C_BAR_BG, web_btn_cb);
-    lv_obj_set_pos(s_web_btn, btn_x[3] - 22, btn_y[3] - 22);
-
     /* Tasks button */
-    s_tasks_btn = create_icon_btn(s_btn_bar, LV_SYMBOL_LIST " ", C_PURPLE, tasks_btn_cb);
-    lv_obj_set_pos(s_tasks_btn, btn_x[4] - 22, btn_y[4] - 22);
+    s_tasks_btn = create_icon_btn(s_btn_dock, LV_SYMBOL_OK, C_PURPLE, tasks_btn_cb);
+    style_icon_btn(s_tasks_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+    lv_obj_align(s_tasks_btn, LV_ALIGN_RIGHT_MID, -18, 0);
 
     /* Thinking animation arcs */
     ui_init_thinking_anim();
@@ -974,8 +985,9 @@ void ui_set_state(ui_state_t state)
     lv_obj_add_flag(s_play_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_details_btn, LV_OBJ_FLAG_HIDDEN);
     lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_tasks_btn, LV_OBJ_FLAG_HIDDEN);
 #if BOARD_HAS_CAMERA
-    lv_obj_clear_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
 #else
     lv_obj_add_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
 #endif
@@ -1019,6 +1031,10 @@ void ui_set_state(ui_state_t state)
         lv_label_set_text(s_sub_label, "A:Talk B:Web C:Tasks");
 #else
         lv_label_set_text(s_sub_label, "Tap or Wheel");
+        lv_obj_clear_flag(s_tasks_btn, LV_OBJ_FLAG_HIDDEN);
+#if BOARD_HAS_CAMERA
+        lv_obj_clear_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
+#endif
 #endif
         break;
 
@@ -1031,8 +1047,6 @@ void ui_set_state(ui_state_t state)
         lv_label_set_text(s_sub_label, "A:Cancel  B:Cancel");
 #else
         lv_label_set_text(s_sub_label, LV_SYMBOL_AUDIO " Recording");
-        /* Show cancel button, hide camera (they share same position) */
-        lv_obj_add_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
         lv_obj_clear_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
 #endif
         break;

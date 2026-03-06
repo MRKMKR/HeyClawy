@@ -34,6 +34,19 @@ esp_err_t camera_init(void);
 esp_err_t camera_capture_jpeg(uint8_t **jpeg_out, size_t *jpeg_size);
 
 /**
+ * @brief Run one inference pass and report whether a face/person-like target is present.
+ *
+ * Uses the currently loaded SSCMA model on the Himax side. This is intended for
+ * device-local presence checks such as keeping the display awake when someone is
+ * in front of the Watcher.
+ *
+ * @param[out] present     true when a qualifying detection is present
+ * @param[out] best_score  optional 0-100 score for the best detection
+ * @return ESP_OK on success
+ */
+esp_err_t camera_check_presence(bool *present, int *best_score);
+
+/**
  * @brief Check if camera is initialized and ready
  * @return true if ready
  */
