@@ -119,6 +119,14 @@ static struct {
     int cron_session_idx;
 } s_oc;
 
+static void reset_fragment_buffer(void)
+{
+    free(s_oc.frag_buf);
+    s_oc.frag_buf = NULL;
+    s_oc.frag_len = 0;
+    s_oc.frag_total = 0;
+}
+
 static void set_state(openclaw_state_t st)
 {
     s_oc.state = st;
@@ -339,7 +347,8 @@ static void handle_message(const char *data, int len)
 
     cJSON *root = cJSON_ParseWithLength(data, len);
     if (!root) {
-        ESP_LOGW(TAG, "Failed to parse JSON message");
+        ESP_LOGW(TAG, "Failed to parse JSON message: %.160s%s",
+                 data ? data : "(null)", (data && len > 160) ? "..." : "");
         return;
     }
 
@@ -975,10 +984,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         ESP_LOGI(TAG, "WebSocket connected");
         s_oc.msg_id = 0;  /* Reset message IDs for clean session */
         /* Free any stale fragmentation buffer from previous connection */
-        free(s_oc.frag_buf);
-        s_oc.frag_buf = NULL;
-        s_oc.frag_len = 0;
-        s_oc.frag_total = 0;
+        reset_fragment_buffer();
         /* Reset ping to 1s so challenge data is flushed before server's 10s handshake timeout.
          * This is critical on reconnect — after auth the ping was relaxed to 30s. */
         esp_websocket_client_set_ping_interval_sec(s_oc.ws, 1);
@@ -987,6 +993,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
 
     case WEBSOCKET_EVENT_DISCONNECTED:
         ESP_LOGW(TAG, "WebSocket disconnected (state was %d)", s_oc.state);
+        reset_fragment_buffer();
         set_state(OPENCLAW_STATE_DISCONNECTED);
         break;
 
@@ -1008,31 +1015,41 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
         ESP_LOGD(TAG, "WS DATA: op=0x%02x plen=%d dlen=%d off=%d",
                  ws_data->op_code, ws_data->payload_len, ws_data->data_len, ws_data->payload_offset);
         if (ws_data->op_code == 0x01 || ws_data->op_code == 0x00) {  // Text or continuation
-            // Handle fragmented messages
-            if (ws_data->payload_len > ws_data->data_len) {
-                // Multi-fragment message
+            bool fragmented = (ws_data->payload_offset > 0) ||
+                              (ws_data->payload_len > ws_data->data_len) ||
+                              (s_oc.frag_buf != NULL);
+            if (fragmented) {
                 ESP_LOGD(TAG, "WS FRAG: off=%d len=%d total=%d", ws_data->payload_offset, ws_data->data_len, ws_data->payload_len);
                 if (ws_data->payload_offset == 0) {
-                    // First fragment: allocate reassembly buffer from PSRAM
-                    free(s_oc.frag_buf);
+                    /* First fragment: allocate reassembly buffer from PSRAM */
+                    reset_fragment_buffer();
                     s_oc.frag_buf = heap_caps_malloc(ws_data->payload_len + 1, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+                    if (!s_oc.frag_buf) {
+                        ESP_LOGE(TAG, "Failed to allocate %d-byte WebSocket fragment buffer", ws_data->payload_len + 1);
+                        break;
+                    }
                     s_oc.frag_total = ws_data->payload_len;
                     s_oc.frag_len = 0;
                 }
-                if (s_oc.frag_buf && s_oc.frag_len + ws_data->data_len <= s_oc.frag_total) {
-                    memcpy(s_oc.frag_buf + s_oc.frag_len, ws_data->data_ptr, ws_data->data_len);
-                    s_oc.frag_len += ws_data->data_len;
+                if (!s_oc.frag_buf) {
+                    ESP_LOGW(TAG, "Ignoring continuation frame without fragment buffer (off=%d len=%d total=%d)",
+                             ws_data->payload_offset, ws_data->data_len, ws_data->payload_len);
+                    break;
                 }
-                // Process when complete
-                if (s_oc.frag_buf && s_oc.frag_len >= s_oc.frag_total) {
+                if (s_oc.frag_len + ws_data->data_len > s_oc.frag_total) {
+                    ESP_LOGW(TAG, "Dropping oversized fragmented message (have=%u add=%d total=%u)",
+                             (unsigned)s_oc.frag_len, ws_data->data_len, (unsigned)s_oc.frag_total);
+                    reset_fragment_buffer();
+                    break;
+                }
+                memcpy(s_oc.frag_buf + s_oc.frag_len, ws_data->data_ptr, ws_data->data_len);
+                s_oc.frag_len += ws_data->data_len;
+                if (s_oc.frag_len >= s_oc.frag_total) {
                     s_oc.frag_buf[s_oc.frag_len] = '\0';
-                    handle_message(s_oc.frag_buf, s_oc.frag_len);
-                    free(s_oc.frag_buf);
-                    s_oc.frag_buf = NULL;
-                    s_oc.frag_len = 0;
+                    handle_message(s_oc.frag_buf, (int)s_oc.frag_len);
+                    reset_fragment_buffer();
                 }
             } else {
-                // Single-fragment message
                 handle_message((const char *)ws_data->data_ptr, ws_data->data_len);
             }
         }
@@ -1040,6 +1057,7 @@ static void ws_event_handler(void *arg, esp_event_base_t base, int32_t event_id,
 
     case WEBSOCKET_EVENT_ERROR:
         ESP_LOGE(TAG, "WebSocket error");
+        reset_fragment_buffer();
         set_state(OPENCLAW_STATE_ERROR);
         break;
 
