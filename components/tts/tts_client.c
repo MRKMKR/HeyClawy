@@ -20,8 +20,8 @@
 
 static const char *TAG = "tts";
 
-/* MP3 input buffer — must hold at least one full MP3 frame (1440 bytes max) */
-#define MP3_BUF_SIZE  (16 * 1024)
+/* Rolling MP3 buffer for incremental download + decode. */
+#define MP3_BUF_SIZE  (32 * 1024)
 
 static struct {
     char host[64];
@@ -32,6 +32,72 @@ static struct {
     bool playing;
     bool stop_requested;
 } s_tts;
+
+static int play_mp3_frames(mp3dec_t *dec, uint8_t *mp3_buf, size_t *buf_len,
+                           int16_t *pcm, int16_t *resamp,
+                           int *src_rate, bool *first_frame,
+                           size_t *total_pcm_samples)
+{
+    size_t offset = 0;
+    int frames_played = 0;
+
+    while (offset < *buf_len && !s_tts.stop_requested) {
+        mp3dec_frame_info_t info;
+        int samples = mp3dec_decode_frame(dec, mp3_buf + offset,
+                                          *buf_len - offset, pcm, &info);
+        if (info.frame_bytes == 0) break;
+        offset += info.frame_bytes;
+
+        if (samples <= 0) continue;
+
+        if (*first_frame) {
+            *src_rate = info.hz;
+            ESP_LOGI(TAG, "MP3: %dHz %dch %dkbps", info.hz, info.channels, info.bitrate_kbps);
+            *first_frame = false;
+        }
+
+        int16_t *mono = pcm;
+        int mono_samples = samples;
+        if (info.channels == 2) {
+            for (int i = 0; i < samples; i++) {
+                pcm[i] = (int16_t)(((int32_t)pcm[i * 2] + pcm[i * 2 + 1]) / 2);
+            }
+        }
+
+        int out_samples;
+        int16_t *play_buf;
+        if (*src_rate != BOARD_AUDIO_SAMPLE_RATE) {
+            out_samples = (int)((int64_t)mono_samples * BOARD_AUDIO_SAMPLE_RATE / *src_rate);
+            for (int i = 0; i < out_samples; i++) {
+                float pos = (float)i * (*src_rate) / BOARD_AUDIO_SAMPLE_RATE;
+                int idx = (int)pos;
+                float frac = pos - idx;
+                if (idx + 1 < mono_samples) {
+                    resamp[i] = (int16_t)(mono[idx] * (1.0f - frac) + mono[idx + 1] * frac);
+                } else if (idx < mono_samples) {
+                    resamp[i] = mono[idx];
+                }
+            }
+            play_buf = resamp;
+        } else {
+            out_samples = mono_samples;
+            play_buf = mono;
+        }
+
+        size_t written = 0;
+        board_audio_play(play_buf, out_samples, &written);
+        *total_pcm_samples += out_samples;
+        frames_played++;
+    }
+
+    if (offset > 0) {
+        size_t remaining = *buf_len - offset;
+        if (remaining > 0) memmove(mp3_buf, mp3_buf + offset, remaining);
+        *buf_len = remaining;
+    }
+
+    return frames_played;
+}
 
 esp_err_t tts_init(const tts_config_t *config)
 {
@@ -135,13 +201,13 @@ esp_err_t tts_speak(const char *text)
     snprintf(json_body, json_size,
              "{\"model\":\"%s\",\"input\":\"%s\",\"voice\":\"%s\"}",
              s_tts.model, escaped, voice);
-    free(escaped);
 
     /* Build URL */
     char url[128];
     snprintf(url, sizeof(url), "http://%s:%d/v1/audio/speech", s_tts.host, s_tts.port);
 
     ESP_LOGI(TAG, "TTS request: voice=%s text=%.60s%s", voice, escaped, strlen(escaped) > 60 ? "..." : "");
+    free(escaped);
 
     /* Configure HTTP client */
     esp_http_client_config_t http_cfg = {
@@ -182,7 +248,6 @@ esp_err_t tts_speak(const char *text)
         goto cleanup;
     }
 
-    /* ── Download entire MP3 into PSRAM, then decode + play ── */
     int content_length = esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
     ESP_LOGI(TAG, "TTS response: status=%d content_length=%d", status, content_length);
@@ -196,24 +261,12 @@ esp_err_t tts_speak(const char *text)
         goto cleanup;
     }
 
-    /* Allocate MP3 buffer in PSRAM */
-    size_t mp3_alloc = (content_length > 0) ? (size_t)content_length + 256 : MP3_BUF_SIZE;
-    uint8_t *mp3_buf = heap_caps_malloc(mp3_alloc, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+    uint8_t *mp3_buf = heap_caps_malloc(MP3_BUF_SIZE, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
     if (!mp3_buf) {
-        ESP_LOGE(TAG, "Failed to alloc MP3 buffer (%u bytes)", (unsigned)mp3_alloc);
+        ESP_LOGE(TAG, "Failed to alloc MP3 buffer (%u bytes)", (unsigned)MP3_BUF_SIZE);
         err = ESP_ERR_NO_MEM;
         goto cleanup;
     }
-
-    /* Read entire MP3 response */
-    size_t mp3_len = 0;
-    while (!s_tts.stop_requested) {
-        int rd = esp_http_client_read(client, (char *)mp3_buf + mp3_len,
-                                      mp3_alloc - mp3_len);
-        if (rd <= 0) break;
-        mp3_len += rd;
-    }
-    ESP_LOGI(TAG, "MP3 downloaded: %u bytes", (unsigned)mp3_len);
 
     /* Decode MP3 frames and play */
     mp3dec_t *dec = heap_caps_malloc(sizeof(mp3dec_t), MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
@@ -245,64 +298,66 @@ esp_err_t tts_speak(const char *text)
         goto cleanup;
     }
 
-    size_t offset = 0;
+    size_t mp3_len = 0;
+    size_t total_mp3_bytes = 0;
     size_t total_pcm_samples = 0;
+    size_t first_audio_ms = 0;
     bool first_frame = true;
     int src_rate = 24000;  /* default, updated from first frame */
+    int idle_reads = 0;
 
-    while (offset < mp3_len && !s_tts.stop_requested) {
-        mp3dec_frame_info_t info;
-        int samples = mp3dec_decode_frame(dec, mp3_buf + offset,
-                                          mp3_len - offset, pcm, &info);
-        if (info.frame_bytes == 0) break;  /* no more frames */
-        offset += info.frame_bytes;
-
-        if (samples <= 0) continue;
-
-        if (first_frame) {
-            src_rate = info.hz;
-            ESP_LOGI(TAG, "MP3: %dHz %dch %dkbps", info.hz, info.channels, info.bitrate_kbps);
-            first_frame = false;
-        }
-
-        /* Convert stereo to mono if needed */
-        int16_t *mono = pcm;
-        int mono_samples = samples;
-        if (info.channels == 2) {
-            for (int i = 0; i < samples; i++) {
-                pcm[i] = (int16_t)(((int32_t)pcm[i*2] + pcm[i*2+1]) / 2);
+    while (!s_tts.stop_requested) {
+        if (mp3_len == MP3_BUF_SIZE) {
+            int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
+                                         &src_rate, &first_frame, &total_pcm_samples);
+            if (frames == 0 && mp3_len == MP3_BUF_SIZE) {
+                ESP_LOGE(TAG, "MP3 streaming buffer exhausted without a decodable frame");
+                err = ESP_FAIL;
+                break;
+            }
+            if (frames > 0 && first_audio_ms == 0) {
+                first_audio_ms = (size_t)(esp_log_timestamp());
             }
         }
 
-        /* Simple linear resample from src_rate to BOARD_AUDIO_SAMPLE_RATE */
-        int out_samples;
-        int16_t *play_buf;
-        if (src_rate != BOARD_AUDIO_SAMPLE_RATE) {
-            out_samples = (int)((int64_t)mono_samples * BOARD_AUDIO_SAMPLE_RATE / src_rate);
-            for (int i = 0; i < out_samples; i++) {
-                float pos = (float)i * src_rate / BOARD_AUDIO_SAMPLE_RATE;
-                int idx = (int)pos;
-                float frac = pos - idx;
-                if (idx + 1 < mono_samples) {
-                    resamp[i] = (int16_t)(mono[idx] * (1.0f - frac) + mono[idx+1] * frac);
-                } else if (idx < mono_samples) {
-                    resamp[i] = mono[idx];
-                }
+        int rd = esp_http_client_read(client, (char *)mp3_buf + mp3_len, MP3_BUF_SIZE - mp3_len);
+        if (rd < 0) {
+            ESP_LOGE(TAG, "HTTP read failed during TTS stream");
+            err = ESP_FAIL;
+            break;
+        }
+        if (rd == 0) {
+            idle_reads++;
+            int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
+                                         &src_rate, &first_frame, &total_pcm_samples);
+            if (frames > 0 && first_audio_ms == 0) {
+                first_audio_ms = (size_t)(esp_log_timestamp());
             }
-            play_buf = resamp;
-        } else {
-            out_samples = mono_samples;
-            play_buf = mono;
+            if (idle_reads > 1) break;
+            continue;
         }
 
-        /* Play through speaker */
-        size_t written = 0;
-        board_audio_play(play_buf, out_samples, &written);
-        total_pcm_samples += out_samples;
+        idle_reads = 0;
+        mp3_len += (size_t)rd;
+        total_mp3_bytes += (size_t)rd;
+
+        int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
+                                     &src_rate, &first_frame, &total_pcm_samples);
+        if (frames > 0 && first_audio_ms == 0) {
+            first_audio_ms = (size_t)(esp_log_timestamp());
+        }
+    }
+
+    if (!s_tts.stop_requested && mp3_len > 0 && err == ESP_OK) {
+        int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
+                                     &src_rate, &first_frame, &total_pcm_samples);
+        if (frames == 0 && mp3_len > 0) {
+            ESP_LOGW(TAG, "TTS finished with %u undecoded MP3 bytes", (unsigned)mp3_len);
+        }
     }
 
     ESP_LOGI(TAG, "TTS playback complete: %u MP3 bytes -> %u PCM samples",
-             (unsigned)mp3_len, (unsigned)total_pcm_samples);
+             (unsigned)total_mp3_bytes, (unsigned)total_pcm_samples);
 
     free(dec);
     free(resamp);
