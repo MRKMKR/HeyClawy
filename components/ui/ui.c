@@ -26,6 +26,7 @@
 
 #include "ui.h"
 #include "board.h"
+#include "settings.h"
 #include "esp_log.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/event_groups.h"
@@ -180,7 +181,14 @@ typedef enum {
     EYE_EXPR_ERROR,
 } eye_expr_t;
 
+typedef enum {
+    IDLE_PAGE_FACE = 0,
+    IDLE_PAGE_ACTIONS,
+} idle_page_t;
+
 static eye_expr_t s_eye_expr = EYE_EXPR_NEUTRAL;
+static idle_page_t s_idle_page = IDLE_PAGE_ACTIONS;
+static idle_page_t s_idle_default_page = IDLE_PAGE_ACTIONS;
 static bool s_eyes_visible = false;
 static uint32_t s_eye_tick = 0;
 static int s_eye_idle_x = 0;
@@ -191,6 +199,9 @@ static uint32_t s_eye_idle_change_tick = 0;
 static uint32_t s_eye_blink_start_tick = 0;
 static uint32_t s_eye_next_blink_tick = 12;
 static uint32_t s_eye_rand = 0x13579BDF;
+
+static void style_icon_btn(lv_obj_t *btn, lv_coord_t size, const lv_font_t *font,
+                           uint8_t bg_opa, uint8_t border_opa);
 
 /* Event bits — must match app_state.h */
 #define UI_TTS_PLAY_BIT        BIT3
@@ -367,7 +378,72 @@ static void ui_init_eyes(void)
 
     lv_obj_add_flag(s_eye_wrap, LV_OBJ_FLAG_HIDDEN);
     s_eye_timer = lv_timer_create(eye_timer_cb, 160, NULL);
+    s_idle_default_page = settings_get()->eyes_default_view ? IDLE_PAGE_FACE : IDLE_PAGE_ACTIONS;
+    s_idle_page = s_idle_default_page;
     update_eye_visuals();
+#endif
+}
+
+static void apply_idle_page_layout_locked(void)
+{
+#if defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+    return;
+#else
+    if (!s_big_label || !s_sub_label || !s_btn_bar || !s_btn_dock ||
+        !s_status_bar || !s_task_label || !s_info_line1 || !s_info_line2) return;
+
+    lv_obj_add_flag(s_play_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_details_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_add_flag(s_cancel_btn, LV_OBJ_FLAG_HIDDEN);
+    lv_obj_clear_flag(s_tasks_btn, LV_OBJ_FLAG_HIDDEN);
+#if BOARD_HAS_CAMERA
+    lv_obj_clear_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
+#else
+    lv_obj_add_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
+#endif
+
+    if (s_idle_page == IDLE_PAGE_FACE) {
+        lv_obj_add_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_task_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_info_line1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_info_line2, LV_OBJ_FLAG_HIDDEN);
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_NEUTRAL);
+        lv_obj_add_flag(s_btn_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_big_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_add_flag(s_sub_label, LV_OBJ_FLAG_HIDDEN);
+
+        lv_obj_set_size(s_btn_dock, 176, 64);
+        lv_obj_align(s_btn_dock, LV_ALIGN_BOTTOM_MID, 0, -10);
+        style_icon_btn(s_camera_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+        style_icon_btn(s_tasks_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+        lv_obj_align(s_camera_btn, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_align(s_tasks_btn, LV_ALIGN_RIGHT_MID, -18, 0);
+    } else {
+        lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_task_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_info_line1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_info_line2, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_big_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_sub_label, LV_OBJ_FLAG_HIDDEN);
+        show_eyes(false);
+        lv_obj_clear_flag(s_btn_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_set_style_text_font(s_big_label, &FONT_BIG, 0);
+        lv_obj_set_style_text_color(s_big_label, C_GREEN, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, -30);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+        lv_label_set_text(s_big_label, "READY");
+        lv_obj_set_style_text_color(s_sub_label, C_TEXT_DIM, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
+        lv_label_set_text(s_sub_label, "Tap or Wheel");
+
+        lv_obj_set_size(s_btn_dock, 176, 64);
+        lv_obj_align(s_btn_dock, LV_ALIGN_BOTTOM_MID, 0, -10);
+        style_icon_btn(s_camera_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+        style_icon_btn(s_tasks_btn, 48, &lv_font_montserrat_16, LV_OPA_COVER, LV_OPA_60);
+        lv_obj_align(s_camera_btn, LV_ALIGN_LEFT_MID, 18, 0);
+        lv_obj_align(s_tasks_btn, LV_ALIGN_RIGHT_MID, -18, 0);
+    }
 #endif
 }
 
@@ -1151,9 +1227,23 @@ void ui_set_state(ui_state_t state)
     if (!s_big_label) return;
     if (!lvgl_port_lock(200)) return;
 
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+    if (state == UI_STATE_IDLE) {
+        s_idle_page = s_idle_default_page;
+    } else {
+        lv_obj_clear_flag(s_status_bar, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_task_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_info_line1, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_info_line2, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_big_label, LV_OBJ_FLAG_HIDDEN);
+        lv_obj_clear_flag(s_sub_label, LV_OBJ_FLAG_HIDDEN);
+    }
+#endif
+
     /* Always reset thinking animation on state change */
     show_thinking_anim(false);
     show_eyes(false);
+    lv_obj_add_flag(s_btn_bar, LV_OBJ_FLAG_HIDDEN);
 
     /* Hide action buttons by default — show only when relevant */
     lv_obj_add_flag(s_play_btn, LV_OBJ_FLAG_HIDDEN);
@@ -1214,25 +1304,14 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_IDLE:
-#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
-        show_eyes(true);
-        set_eye_expression(EYE_EXPR_NEUTRAL);
-        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
-        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
-        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
-#endif
+#ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_obj_set_style_text_color(s_big_label, C_GREEN, 0);
         lv_label_set_text(s_big_label, "READY");
         lv_obj_set_style_text_color(s_sub_label, C_TEXT_DIM, 0);
         lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
-#ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_label_set_text(s_sub_label, "A:Talk B:Web C:Tasks");
 #else
-        lv_label_set_text(s_sub_label, "Tap or Wheel");
-        lv_obj_clear_flag(s_tasks_btn, LV_OBJ_FLAG_HIDDEN);
-#if BOARD_HAS_CAMERA
-        lv_obj_clear_flag(s_camera_btn, LV_OBJ_FLAG_HIDDEN);
-#endif
+        apply_idle_page_layout_locked();
 #endif
         break;
 
@@ -1384,6 +1463,23 @@ ui_state_t ui_get_state(void)
     return s_state;
 }
 
+bool ui_cycle_idle_page(int delta)
+{
+#if defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+    (void)delta;
+    return false;
+#else
+    if (s_state != UI_STATE_IDLE || delta == 0) return false;
+    idle_page_t next = (delta > 0) ? IDLE_PAGE_ACTIONS : IDLE_PAGE_FACE;
+    if (next == s_idle_page) return false;
+    s_idle_page = next;
+    if (!lvgl_port_lock(200)) return false;
+    apply_idle_page_layout_locked();
+    lvgl_port_unlock();
+    return true;
+#endif
+}
+
 /* ── Status bar updates ───────────────────────────────────────────────── */
 
 void ui_set_wifi_status(bool connected, int rssi)
@@ -1531,18 +1627,7 @@ void ui_set_server_info(const openclaw_info_t *info)
     } else if (s_state == UI_STATE_IDLE) {
         s_showing_activity = false;
         s_activity_detail[0] = '\0';
-        /* Restore normal IDLE display when no longer active */
-        const char *cur = lv_label_get_text(s_big_label);
-        if (cur && strcmp(cur, "READY") != 0 && strcmp(cur, "Tap or Wheel") != 0) {
-            /* Was showing activity text, restore to READY */
-            ESP_LOGI(TAG, "OC idle (last=%ds) → READY display", info->last_activity_sec);
-            lv_obj_set_style_text_color(s_big_label, C_GREEN, 0);
-            lv_obj_set_style_text_font(s_big_label, &FONT_BIG, 0);
-            lv_label_set_text(s_big_label, "READY");
-            lv_obj_set_style_text_color(s_sub_label, C_TEXT_DIM, 0);
-            lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
-            lv_label_set_text(s_sub_label, "Tap or Wheel");
-        }
+        apply_idle_page_layout_locked();
     }
 
     /* Line 1: WA status when linked, blank otherwise */

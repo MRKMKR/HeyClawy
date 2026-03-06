@@ -148,6 +148,10 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <label>Brightness: <span class="range-val" id="brt-val">100</span>%</label>
       <input type="range" id="s-brightness" min="0" max="100" value="100" oninput="document.getElementById('brt-val').textContent=this.value">
     </div>
+    <div class="form-group" style="display:flex;align-items:center;gap:12px">
+      <label style="margin:0">Eyes Screen As Default Idle View</label>
+      <label class="toggle"><input type="checkbox" id="s-eyes_default_view"><span class="slider"></span></label>
+    </div>
   </div>
   <div class="card">
     <h3>💡 RGB LED</h3>
@@ -492,6 +496,7 @@ async function loadSettings() {
     if ($('s-startup_pattern')) $('s-startup_pattern').value = settings.startup_pattern ?? 0;
     if ($('s-auto_read_response')) $('s-auto_read_response').checked = settings.auto_read_response;
     if ($('s-short_response')) $('s-short_response').checked = settings.short_response;
+    if ($('s-eyes_default_view')) $('s-eyes_default_view').checked = settings.eyes_default_view;
     if ($('s-activity_carousel')) $('s-activity_carousel').checked = settings.activity_carousel;
     if ($('s-auto_notify')) $('s-auto_notify').checked = settings.auto_notify;
   } catch(e) { console.error(e); }
@@ -520,6 +525,7 @@ async function saveSettings() {
   if ($('s-startup_pattern')) data.startup_pattern = Number($('s-startup_pattern').value);
   if ($('s-auto_read_response')) data.auto_read_response = $('s-auto_read_response').checked;
   if ($('s-short_response')) data.short_response = $('s-short_response').checked;
+  if ($('s-eyes_default_view')) data.eyes_default_view = $('s-eyes_default_view').checked;
   if ($('s-activity_carousel')) data.activity_carousel = $('s-activity_carousel').checked;
   if ($('s-auto_notify')) data.auto_notify = $('s-auto_notify').checked;
 

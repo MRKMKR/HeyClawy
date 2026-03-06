@@ -53,6 +53,7 @@ typedef struct {
 
     /* Display */
     uint8_t  brightness;           /* 0-100 */
+    bool     eyes_default_view;    /* idle opens on eyes screen instead of action screen */
 
     /* RGB LED */
     bool     rgb_enabled;

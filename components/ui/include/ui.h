@@ -45,6 +45,7 @@ void ui_set_event_group(void *event_group);
 // Set the main application state (updates entire screen)
 void ui_set_state(ui_state_t state);
 ui_state_t ui_get_state(void);
+bool ui_cycle_idle_page(int delta);
 
 // Status bar updates
 void ui_set_wifi_status(bool connected, int rssi);

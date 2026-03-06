@@ -146,6 +146,11 @@ static void knob_task(void *arg)
                     app_set_state(UI_STATE_IDLE);
                 }
             } else if (ui_get_state() == UI_STATE_IDLE) {
+                if (ui_cycle_idle_page(delta)) {
+                    ESP_LOGI(TAG, "Wheel switched idle page");
+                    vTaskDelay(pdMS_TO_TICKS(DEBOUNCE_MS));
+                    continue;
+                }
                 /* If pending camera image, discard it (require 3+ ticks to avoid noise) */
                 if (g_pending_jpeg && (delta > 2 || delta < -2)) {
                     ESP_LOGI(TAG, "Wheel spin — discarding pending camera image");

@@ -33,6 +33,7 @@ static void apply_bare_defaults(settings_t *s)
     s->auto_read_response  = true;
     s->short_response      = true;
     s->brightness          = 100;
+    s->eyes_default_view   = false;
     s->rgb_enabled         = true;
     s->startup_pattern     = 0;  /* rainbow */
     s->sleep_timeout_ms    = 180000;
@@ -92,6 +93,7 @@ static void load_from_nvs(settings_t *s)
     if (nvs_get_u8(h, "web_on", &tmp) == ESP_OK) s->webserver_enabled = tmp;
     if (nvs_get_u8(h, "auto_read", &tmp) == ESP_OK) s->auto_read_response = tmp;
     if (nvs_get_u8(h, "short_resp", &tmp) == ESP_OK) s->short_response = tmp;
+    if (nvs_get_u8(h, "eyes_default", &tmp) == ESP_OK) s->eyes_default_view = tmp;
     if (nvs_get_u8(h, "carousel", &tmp) == ESP_OK) s->activity_carousel = tmp;
     if (nvs_get_u8(h, "auto_notify", &tmp) == ESP_OK) s->auto_notify = tmp;
 
@@ -123,6 +125,7 @@ static esp_err_t save_to_nvs(const settings_t *s)
     nvs_set_u8(h,  "max_rec_s",   s->max_record_seconds);
     nvs_set_u16(h, "nospeech_ms", s->no_speech_timeout_ms);
     nvs_set_u8(h,  "brightness",  s->brightness);
+    nvs_set_u8(h,  "eyes_default", s->eyes_default_view ? 1 : 0);
     nvs_set_u32(h, "sleep_ms",    s->sleep_timeout_ms);
     nvs_set_u8(h,  "ww_sleep",   s->wake_word_in_sleep ? 1 : 0);
     nvs_set_u8(h,  "log_verb",    s->log_verbosity);
@@ -249,6 +252,7 @@ char *settings_to_json(bool include_secrets)
 
     /* Display */
     cJSON_AddNumberToObject(j, "brightness", s->brightness);
+    cJSON_AddBoolToObject(j, "eyes_default_view", s->eyes_default_view);
 
     /* RGB */
     cJSON_AddBoolToObject(j, "rgb_enabled", s->rgb_enabled);
@@ -325,6 +329,7 @@ esp_err_t settings_from_json(const char *json, size_t len)
     JSON_BOOL("auto_read_response", auto_read_response);
     JSON_BOOL("short_response",  short_response);
     JSON_U8("brightness",        brightness);
+    JSON_BOOL("eyes_default_view", eyes_default_view);
     JSON_BOOL("rgb_enabled",     rgb_enabled);
     JSON_U8("startup_pattern",   startup_pattern);
     JSON_U32("sleep_timeout_ms", sleep_timeout_ms);
