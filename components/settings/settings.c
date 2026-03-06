@@ -26,10 +26,10 @@ static void apply_bare_defaults(settings_t *s)
     s->tts_port            = 5050;
     s->stt_port            = 5051;
     s->volume              = 100;
-    s->silence_timeout_ms  = 1500;
+    s->silence_timeout_ms  = 900;
     s->silence_threshold   = 500;
     s->max_record_seconds  = 15;
-    s->no_speech_timeout_ms = 5000;
+    s->no_speech_timeout_ms = 3000;
     s->auto_read_response  = true;
     s->short_response      = true;
     s->brightness          = 100;
