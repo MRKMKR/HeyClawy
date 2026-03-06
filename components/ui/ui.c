@@ -137,6 +137,10 @@ static lv_obj_t *s_task_label = NULL;
 /* Center zone */
 static lv_obj_t *s_big_label = NULL;     /* 48pt status / response */
 static lv_obj_t *s_sub_label = NULL;     /* 28pt sub-text */
+static lv_obj_t *s_eye_wrap = NULL;
+static lv_obj_t *s_eye_left = NULL;
+static lv_obj_t *s_eye_right = NULL;
+static lv_timer_t *s_eye_timer = NULL;
 
 /* Info strip (server info) */
 static lv_obj_t *s_info_line1 = NULL;
@@ -166,6 +170,27 @@ static lv_obj_t *s_think_label = NULL;  /* center detail/time text */
 
 /* Event group for button callbacks (set via ui_set_event_group) */
 static EventGroupHandle_t s_events = NULL;
+
+typedef enum {
+    EYE_EXPR_NEUTRAL = 0,
+    EYE_EXPR_ALERT,
+    EYE_EXPR_FOCUS,
+    EYE_EXPR_THINK,
+    EYE_EXPR_SPEAK,
+    EYE_EXPR_ERROR,
+} eye_expr_t;
+
+static eye_expr_t s_eye_expr = EYE_EXPR_NEUTRAL;
+static bool s_eyes_visible = false;
+static uint32_t s_eye_tick = 0;
+static int s_eye_idle_x = 0;
+static int s_eye_idle_y = 0;
+static int s_eye_idle_target_x = 0;
+static int s_eye_idle_target_y = 0;
+static uint32_t s_eye_idle_change_tick = 0;
+static uint32_t s_eye_blink_start_tick = 0;
+static uint32_t s_eye_next_blink_tick = 12;
+static uint32_t s_eye_rand = 0x13579BDF;
 
 /* Event bits — must match app_state.h */
 #define UI_TTS_PLAY_BIT        BIT3
@@ -198,6 +223,152 @@ static lv_obj_t *create_status_chip(lv_obj_t *parent, lv_coord_t w, lv_coord_t h
     lv_obj_set_flex_align(chip, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
     lv_obj_clear_flag(chip, LV_OBJ_FLAG_SCROLLABLE);
     return chip;
+}
+
+static int eye_rand_range(int min_inclusive, int max_inclusive)
+{
+    s_eye_rand = (1103515245u * s_eye_rand + 12345u);
+    uint32_t span = (uint32_t)(max_inclusive - min_inclusive + 1);
+    return min_inclusive + (int)((s_eye_rand >> 16) % span);
+}
+
+static void set_eye_shape(lv_obj_t *eye, lv_coord_t w, lv_coord_t h, lv_color_t eye_color)
+{
+    if (!eye) return;
+    lv_obj_set_size(eye, w, h);
+    lv_obj_set_style_radius(eye, h / 2 + 8, 0);
+    lv_obj_set_style_bg_color(eye, eye_color, 0);
+    lv_obj_set_style_bg_opa(eye, LV_OPA_COVER, 0);
+    lv_obj_set_style_shadow_width(eye, 18, 0);
+    lv_obj_set_style_shadow_opa(eye, LV_OPA_50, 0);
+    lv_obj_set_style_shadow_color(eye, eye_color, 0);
+}
+
+static void update_eye_visuals(void)
+{
+    if (!s_eye_left || !s_eye_right) return;
+
+    bool blink = false;
+    lv_coord_t eye_w = 104;
+    lv_coord_t eye_h = 58;
+    lv_color_t eye_color = lv_color_hex(0x1F8F4E);
+    lv_coord_t left_base_x = 36;
+    lv_coord_t right_base_x = 180;
+    lv_coord_t base_y = 32;
+    int offset_x = 0;
+    int offset_y = 0;
+
+    switch (s_eye_expr) {
+    case EYE_EXPR_ALERT:
+        eye_w = 110; eye_h = 66;
+        break;
+    case EYE_EXPR_FOCUS:
+        eye_w = 114; eye_h = 28;
+        break;
+    case EYE_EXPR_THINK: {
+        eye_w = 102; eye_h = 44;
+        eye_color = lv_color_hex(0x2EA95B);
+        break;
+    }
+    case EYE_EXPR_SPEAK:
+        eye_w = 108; eye_h = ((s_eye_tick % 6) < 3) ? 26 : 36;
+        break;
+    case EYE_EXPR_ERROR:
+        eye_w = 118; eye_h = 20;
+        eye_color = lv_color_hex(0x268454);
+        break;
+    case EYE_EXPR_NEUTRAL:
+    default:
+        if (s_eye_tick >= s_eye_idle_change_tick) {
+            s_eye_idle_change_tick = s_eye_tick + (uint32_t)eye_rand_range(10, 20);
+            s_eye_idle_target_x = eye_rand_range(-8, 8);
+            s_eye_idle_target_y = eye_rand_range(-4, 4);
+        }
+        if (s_eye_tick >= s_eye_next_blink_tick) {
+            s_eye_blink_start_tick = s_eye_tick;
+            s_eye_next_blink_tick = s_eye_tick + (uint32_t)eye_rand_range(18, 42);
+        }
+        s_eye_idle_x += (s_eye_idle_target_x - s_eye_idle_x) / 3;
+        s_eye_idle_y += (s_eye_idle_target_y - s_eye_idle_y) / 3;
+        offset_x = s_eye_idle_x;
+        offset_y = s_eye_idle_y;
+        break;
+    }
+
+    if (s_eye_blink_start_tick > 0) {
+        uint32_t blink_age = s_eye_tick - s_eye_blink_start_tick;
+        if (blink_age <= 1) {
+            blink = true;
+        } else if (blink_age > 2) {
+            s_eye_blink_start_tick = 0;
+        }
+    }
+
+    if (blink) {
+        eye_h = 10;
+    }
+
+    set_eye_shape(s_eye_left, eye_w, eye_h, eye_color);
+    set_eye_shape(s_eye_right, eye_w, eye_h, eye_color);
+    lv_obj_set_pos(s_eye_left, left_base_x + offset_x, base_y + offset_y);
+    lv_obj_set_pos(s_eye_right, right_base_x + offset_x, base_y + offset_y);
+}
+
+static void eye_timer_cb(lv_timer_t *timer)
+{
+    (void)timer;
+    s_eye_tick++;
+    if (!s_eyes_visible) return;
+    update_eye_visuals();
+}
+
+static void show_eyes(bool show)
+{
+    s_eyes_visible = show;
+    if (!s_eye_wrap) return;
+
+    if (show) {
+        lv_obj_clear_flag(s_eye_wrap, LV_OBJ_FLAG_HIDDEN);
+        update_eye_visuals();
+    } else {
+        lv_obj_add_flag(s_eye_wrap, LV_OBJ_FLAG_HIDDEN);
+    }
+}
+
+static void set_eye_expression(eye_expr_t expr)
+{
+    s_eye_expr = expr;
+    update_eye_visuals();
+}
+
+static void ui_init_eyes(void)
+{
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+    s_eye_wrap = lv_obj_create(s_scr);
+    lv_obj_set_size(s_eye_wrap, 320, 150);
+    lv_obj_align(s_eye_wrap, LV_ALIGN_CENTER, 0, -20);
+    lv_obj_set_style_bg_opa(s_eye_wrap, LV_OPA_TRANSP, 0);
+    lv_obj_set_style_border_width(s_eye_wrap, 0, 0);
+    lv_obj_set_style_pad_all(s_eye_wrap, 0, 0);
+    lv_obj_clear_flag(s_eye_wrap, LV_OBJ_FLAG_SCROLLABLE);
+    lv_obj_clear_flag(s_eye_wrap, LV_OBJ_FLAG_CLICKABLE);
+
+    s_eye_left = lv_obj_create(s_eye_wrap);
+    lv_obj_set_pos(s_eye_left, 36, 32);
+    lv_obj_set_style_border_width(s_eye_left, 0, 0);
+    lv_obj_set_style_pad_all(s_eye_left, 0, 0);
+    lv_obj_clear_flag(s_eye_left, LV_OBJ_FLAG_SCROLLABLE);
+
+    s_eye_right = lv_obj_create(s_eye_wrap);
+    lv_obj_set_pos(s_eye_right, 180, 32);
+    lv_obj_set_style_border_width(s_eye_right, 0, 0);
+    lv_obj_set_style_pad_all(s_eye_right, 0, 0);
+    lv_obj_clear_flag(s_eye_right, LV_OBJ_FLAG_SCROLLABLE);
+
+    lv_obj_add_flag(s_eye_wrap, LV_OBJ_FLAG_HIDDEN);
+    s_eye_timer = lv_timer_create(eye_timer_cb, 160, NULL);
+    update_eye_visuals();
+#endif
 }
 
 /* Check if a 2-byte UTF-8 character is in the Latin range renderable by Montserrat.
@@ -879,6 +1050,8 @@ esp_err_t ui_init(void)
     lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
     lv_label_set_text(s_sub_label, "");
 
+    ui_init_eyes();
+
     /* ── Info strip — 20pt for server info ── */
     s_info_line1 = lv_label_create(s_scr);
     lv_obj_set_style_text_font(s_info_line1, &FONT_INFO, 0);
@@ -980,6 +1153,7 @@ void ui_set_state(ui_state_t state)
 
     /* Always reset thinking animation on state change */
     show_thinking_anim(false);
+    show_eyes(false);
 
     /* Hide action buttons by default — show only when relevant */
     lv_obj_add_flag(s_play_btn, LV_OBJ_FLAG_HIDDEN);
@@ -1001,6 +1175,11 @@ void ui_set_state(ui_state_t state)
         lv_obj_set_style_base_dir(s_big_label, LV_BASE_DIR_LTR, 0);
     }
 
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+    lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, -30);
+    lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 6);
+#endif
+
     /* Clear overlapping content on any state transition */
     lv_label_set_text(s_info_line1, "");
     lv_label_set_text(s_info_line2, "");
@@ -1008,25 +1187,44 @@ void ui_set_state(ui_state_t state)
 
     switch (state) {
     case UI_STATE_BOOT:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_NEUTRAL);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_big_label, &FONT_BIG_SM, 0);
         lv_label_set_text(s_big_label, "STARTING");
         lv_label_set_text(s_sub_label, "");
         break;
 
     case UI_STATE_CONNECTING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_FOCUS);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_ORANGE, 0);
-        lv_obj_set_style_text_font(s_big_label, &FONT_BIG_SM, 0);
         lv_label_set_text(s_big_label, "CONNECTING");
         lv_obj_set_style_text_color(s_sub_label, C_TEXT_DIM, 0);
         lv_label_set_text(s_sub_label, "");
         break;
 
     case UI_STATE_IDLE:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_NEUTRAL);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_GREEN, 0);
         lv_label_set_text(s_big_label, "READY");
         lv_obj_set_style_text_color(s_sub_label, C_TEXT_DIM, 0);
-        lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
 #ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_label_set_text(s_sub_label, "A:Talk B:Web C:Tasks");
 #else
@@ -1039,10 +1237,17 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_LISTENING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_ALERT);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_RED, 0);
         lv_label_set_text(s_big_label, "REC");
         lv_obj_set_style_text_color(s_sub_label, C_RED, 0);
-        lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
 #ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_label_set_text(s_sub_label, "A:Cancel  B:Cancel");
 #else
@@ -1052,10 +1257,17 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_SENDING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_FOCUS);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_BLUE, 0);
         lv_label_set_text(s_big_label, "SEND");
         lv_obj_set_style_text_color(s_sub_label, C_BLUE, 0);
-        lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
 #ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_label_set_text(s_sub_label, "B:Cancel");
 #else
@@ -1064,15 +1276,33 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_THINKING:
-        /* Show colorful multi-arc spinner animation */
+#if defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
         show_thinking_anim(true);
         if (s_think_label) lv_label_set_text(s_think_label, "Thinking...");
+#else
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_THINK);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_set_style_text_color(s_big_label, C_PURPLE, 0);
+        lv_obj_set_style_text_color(s_sub_label, C_PURPLE, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+        lv_label_set_text(s_big_label, "THINKING");
+        lv_label_set_text(s_sub_label, "Working...");
+#endif
         break;
 
     case UI_STATE_STREAMING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_THINK);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_PURPLE, 0);
-        lv_obj_set_style_text_font(s_big_label, &FONT_BIG, 0);
-        lv_label_set_text(s_big_label, "...");
+        lv_label_set_text(s_big_label, "RECEIVING");
         lv_obj_set_style_text_color(s_sub_label, C_PURPLE, 0);
         lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
         lv_label_set_text(s_sub_label, "Receiving");
@@ -1089,6 +1319,15 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_TTS_LOADING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_SPEAK);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_set_style_text_color(s_big_label, C_TEAL, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+        lv_label_set_text(s_big_label, "VOICE");
+#endif
         lv_obj_set_style_text_color(s_sub_label, C_TEAL, 0);
         lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
 #ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
@@ -1100,8 +1339,17 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_TTS_PLAYING:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_SPEAK);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_set_style_text_color(s_big_label, C_TEAL, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+        lv_label_set_text(s_big_label, "SPEAKING");
+#endif
         lv_obj_set_style_text_color(s_sub_label, C_TEAL, 0);
-        lv_obj_set_style_text_font(s_sub_label, &FONT_MED, 0);
+        lv_obj_set_style_text_font(s_sub_label, &FONT_SUB, 0);
 #ifdef CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2
         lv_label_set_text(s_sub_label, LV_SYMBOL_VOLUME_MAX " B:Stop");
 #else
@@ -1114,6 +1362,13 @@ void ui_set_state(ui_state_t state)
         break;
 
     case UI_STATE_ERROR:
+#if !defined(CONFIG_HEYCLAWY_BOARD_M5STICKCPLUS2)
+        show_eyes(true);
+        set_eye_expression(EYE_EXPR_ERROR);
+        lv_obj_set_style_text_font(s_big_label, &FONT_SUB, 0);
+        lv_obj_align(s_big_label, LV_ALIGN_CENTER, 0, 54);
+        lv_obj_align_to(s_sub_label, s_big_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 4);
+#endif
         lv_obj_set_style_text_color(s_big_label, C_RED, 0);
         lv_label_set_text(s_big_label, "ERROR");
         lv_obj_set_style_text_color(s_sub_label, C_RED, 0);
