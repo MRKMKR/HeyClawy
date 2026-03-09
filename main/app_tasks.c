@@ -798,7 +798,7 @@ static void presence_task(void *arg)
     int consecutive_misses = 0;
 
     while (1) {
-        vTaskDelay(pdMS_TO_TICKS(1500));
+        vTaskDelay(pdMS_TO_TICKS(800));
 
         ui_state_t state = ui_get_state();
         if (state == UI_STATE_LISTENING || state == UI_STATE_SENDING ||

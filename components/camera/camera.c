@@ -85,7 +85,7 @@ static bool box_looks_like_presence(const sscma_client_box_t *box, bool require_
 
     /* Unlabeled models need stronger guards to avoid false wakeups. */
     if (!require_labeled_target) {
-        if (box->score < 70) return false;
+        if (box->score < 63) return false;
         if (area < 1800) return false;
         return true;
     }
