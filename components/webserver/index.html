@@ -133,12 +133,12 @@ body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;backgrou
       <input type="range" id="s-volume" min="0" max="100" value="100" oninput="document.getElementById('vol-val').textContent=this.value">
     </div>
     <div class="form-row">
-      <div class="form-group"><label>Silence Timeout (ms)</label><input type="number" id="s-silence_timeout_ms" placeholder="1500"></div>
+      <div class="form-group"><label>Silence Timeout (ms)</label><input type="number" id="s-silence_timeout_ms" placeholder="900"></div>
       <div class="form-group"><label>Silence Threshold (RMS)</label><input type="number" id="s-silence_threshold" placeholder="500"></div>
     </div>
     <div class="form-row">
       <div class="form-group"><label>Max Record (sec)</label><input type="number" id="s-max_record_seconds" min="1" max="60"></div>
-      <div class="form-group"><label>No-Speech Timeout (ms)</label><input type="number" id="s-no_speech_timeout_ms" placeholder="5000"></div>
+      <div class="form-group"><label>No-Speech Timeout (ms)</label><input type="number" id="s-no_speech_timeout_ms" placeholder="3000"></div>
     </div>
     <p style="font-size:11px;color:var(--dim);margin-top:4px">Silence timeout: how long silence after speech to stop. No-speech: how long to wait before canceling if nobody speaks.</p>
   </div>

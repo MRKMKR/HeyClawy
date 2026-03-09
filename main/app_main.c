@@ -371,6 +371,7 @@ void app_main(void)
         .port = cfg->oc_port,
         .token = cfg->oc_token,
         .device_key_hex = cfg->oc_device_key,
+        .session_key = SECRETS_OPENCLAW_SESSION_KEY,
     };
     openclaw_init(&oc_config, on_openclaw_state);
     openclaw_set_notify_cb(on_openclaw_notify);
@@ -477,6 +478,14 @@ void app_main(void)
             ESP_LOGI(TAG, "Wake word detected!");
             ui_state_t cur = ui_get_state();
             if (cur == UI_STATE_IDLE || cur == UI_STATE_RESPONSE) {
+                wake_word_pause();
+                voice_chat_start();
+                wake_word_resume();
+            } else if (cur == UI_STATE_TTS_PLAYING || cur == UI_STATE_TTS_LOADING) {
+                /* Talk-mode style barge-in: user speech interrupts playback immediately. */
+                ESP_LOGI(TAG, "Wake word during TTS — barging in");
+                tts_stop();
+                g_continue_listening = false;
                 wake_word_pause();
                 voice_chat_start();
                 wake_word_resume();

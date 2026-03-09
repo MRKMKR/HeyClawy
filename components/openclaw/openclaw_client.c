@@ -91,7 +91,8 @@ static struct {
     size_t response_len;
     char host[64];
     uint16_t port;
-    char token[64];
+    char token[128];
+    char session_key[64];
     char nonce[48];
     int64_t chat_start_time;
     uint32_t msg_id;
@@ -1075,6 +1076,11 @@ esp_err_t openclaw_init(const openclaw_config_t *config, openclaw_state_cb_t sta
     if (config->token) {
         strncpy(s_oc.token, config->token, sizeof(s_oc.token) - 1);
     }
+    if (config->session_key && config->session_key[0]) {
+        strncpy(s_oc.session_key, config->session_key, sizeof(s_oc.session_key) - 1);
+    } else {
+        strncpy(s_oc.session_key, "default", sizeof(s_oc.session_key) - 1);
+    }
 
     // Initialize ED25519 device identity from hex seed
     if (config->device_key_hex && strlen(config->device_key_hex) == 64) {
@@ -1191,7 +1197,7 @@ esp_err_t openclaw_chat_send(const char *message, openclaw_chat_cb_t response_cb
     cJSON_AddStringToObject(root, "method", "chat.send");
 
     cJSON *params = cJSON_AddObjectToObject(root, "params");
-    cJSON_AddStringToObject(params, "sessionKey", "default");
+    cJSON_AddStringToObject(params, "sessionKey", s_oc.session_key);
     cJSON_AddStringToObject(params, "message", full_msg);
 
     // Generate unique idempotency key
@@ -1277,7 +1283,7 @@ esp_err_t openclaw_chat_send_with_image(const char *message,
     cJSON_AddStringToObject(root, "method", "chat.send");
 
     cJSON *params = cJSON_AddObjectToObject(root, "params");
-    cJSON_AddStringToObject(params, "sessionKey", "default");
+    cJSON_AddStringToObject(params, "sessionKey", s_oc.session_key);
     cJSON_AddStringToObject(params, "message", full_msg);
 
     char idem_key[32];
@@ -1458,7 +1464,7 @@ esp_err_t openclaw_chat_send_audio_with_image(const int16_t *pcm, size_t num_sam
     cJSON_AddStringToObject(root, "method", "chat.send");
 
     cJSON *params = cJSON_AddObjectToObject(root, "params");
-    cJSON_AddStringToObject(params, "sessionKey", "default");
+    cJSON_AddStringToObject(params, "sessionKey", s_oc.session_key);
     cJSON_AddStringToObject(params, "message", full_msg);
 
     char idem_key[32];

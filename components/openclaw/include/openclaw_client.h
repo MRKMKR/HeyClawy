@@ -31,6 +31,7 @@ typedef struct {
     uint16_t port;
     const char *token;
     const char *device_key_hex; // 64-char hex string: ED25519 seed (32 bytes)
+    const char *session_key;
 } openclaw_config_t;
 
 /* Individual cron job info */
