@@ -50,6 +50,7 @@ void voice_chat_start(void)
     }
 
     const settings_t *cfg = settings_get();
+    app_turn_reset();
 
     /* Play start sound before recording */
     play_feedback_sound(snd_rec_start, snd_rec_start_len);
@@ -76,6 +77,8 @@ void voice_chat_start(void)
     int silent_count = 0;
     bool had_speech = false;
     size_t total_read = 0;
+    size_t speech_start_sample = 0;
+    size_t speech_end_sample = 0;
 
     /* Adaptive noise floor: calibrate from audio after I2S stabilizes */
     const int skip_chunks = 4;      /* Skip first 4 chunks (~128ms) — I2S startup noise */
@@ -168,8 +171,13 @@ void voice_chat_start(void)
         }
 
         if (rms > effective_threshold) {
+            size_t chunk_start = total_read - read_now;
             had_speech = true;
             silent_count = 0;
+            if (speech_end_sample == 0) {
+                speech_start_sample = chunk_start;
+            }
+            speech_end_sample = total_read;
         } else {
             silent_count++;
             if (had_speech && silent_count >= silence_chunks) {
@@ -232,13 +240,54 @@ void voice_chat_start(void)
         return;
     }
 
+    size_t trimmed_leading = 0;
+    size_t trimmed_trailing = 0;
+    size_t sent_samples = total_read;
+    const int pre_roll_chunks = 4;
+    const int post_roll_chunks = 6;
+    size_t trim_start = 0;
+    size_t trim_end = total_read;
+
+    if (speech_end_sample > speech_start_sample) {
+        size_t pre_roll = (size_t)(pre_roll_chunks * chunk);
+        size_t post_roll = (size_t)(post_roll_chunks * chunk);
+        trim_start = (speech_start_sample > pre_roll) ? (speech_start_sample - pre_roll) : 0;
+        /* For short commands, keep the tail to avoid clipping quiet final words. */
+        if (total_read <= (size_t)(BOARD_AUDIO_SAMPLE_RATE * 2.5f)) {
+            trim_end = total_read;
+        } else {
+            trim_end = speech_end_sample + post_roll;
+            if (trim_end > total_read) trim_end = total_read;
+        }
+        if (trim_end > trim_start) {
+            trimmed_leading = trim_start;
+            trimmed_trailing = total_read - trim_end;
+            sent_samples = trim_end - trim_start;
+        }
+    }
+
+    if (sent_samples < (size_t)(BOARD_AUDIO_SAMPLE_RATE * 0.3f)) {
+        trim_start = 0;
+        trim_end = total_read;
+        trimmed_leading = 0;
+        trimmed_trailing = 0;
+        sent_samples = total_read;
+    }
+
+    ESP_LOGI(TAG, "STT trim: lead=%u tail=%u send=%u/%u samples",
+             (unsigned)trimmed_leading, (unsigned)trimmed_trailing,
+             (unsigned)sent_samples, (unsigned)total_read);
+    app_turn_mark_capture(total_read, sent_samples, trimmed_leading, trimmed_trailing);
+
     app_set_state(UI_STATE_SENDING);
     ui_set_status_message("Transcribing...");
 
     /* STT */
     char transcribed[512] = {0};
-    esp_err_t stt_err = stt_transcribe(audio_buf, total_read, BOARD_AUDIO_SAMPLE_RATE,
+    app_turn_mark_stt_start();
+    esp_err_t stt_err = stt_transcribe(audio_buf + trim_start, sent_samples, BOARD_AUDIO_SAMPLE_RATE,
                                        transcribed, sizeof(transcribed));
+    app_turn_mark_stt_done();
     free(audio_buf);
 
     if (stt_err != ESP_OK || transcribed[0] == '\0') {
@@ -273,6 +322,7 @@ void voice_chat_start(void)
     const char *msg = transcribed;
 
     /* Send with or without image */
+    app_turn_mark_openclaw_sent();
     if (jpeg && jpeg_sz > 0) {
         // Use the audio+image function with the original audio for better quality
         // But since we already STT'd, just send text + image attachment

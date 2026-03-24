@@ -22,8 +22,13 @@ typedef struct {
     const char *model;      // Model name (e.g., "tts-1")
 } tts_config_t;
 
-// Callback for audio chunks during streaming playback
-typedef void (*tts_audio_cb_t)(const int16_t *samples, size_t count);
+typedef struct {
+    uint32_t request_to_headers_ms;
+    uint32_t request_to_first_audio_ms;
+    uint32_t total_ms;
+    size_t total_mp3_bytes;
+    size_t total_pcm_samples;
+} tts_stats_t;
 
 // Initialize the TTS client
 esp_err_t tts_init(const tts_config_t *config);
@@ -38,6 +43,9 @@ void tts_stop(void);
 
 // Check if TTS is currently playing
 bool tts_is_playing(void);
+
+// Copy the last completed TTS timing stats.
+void tts_get_last_stats(tts_stats_t *out);
 
 #ifdef __cplusplus
 }

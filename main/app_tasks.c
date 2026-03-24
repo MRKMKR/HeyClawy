@@ -387,49 +387,59 @@ static void tts_play_task(void *arg)
         xEventGroupWaitBits(g_app_events, TTS_PLAY_BIT,
                             pdTRUE, pdFALSE, portMAX_DELAY);
 
-        g_tts_pending = false;  /* TTS task now owns the transition */
+        while (1) {
+            g_tts_pending = false;  /* TTS task now owns the current queued text */
 
-        if (tts_is_playing()) continue;
+            if (tts_is_playing()) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+                if (!g_tts_pending) break;
+                continue;
+            }
 
-        /* Check for notification text first, then UI response */
-        const char *text = NULL;
-        bool is_notification = false;
-        if (g_tts_text[0]) {
-            text = g_tts_text;
-            is_notification = true;
-        } else {
-            text = ui_get_full_response();
-        }
-        if (!text || !text[0]) {
-            ESP_LOGW(TAG, "No response text for TTS");
+            /* Check queued chunk/notification text first, then full UI response */
+            const char *text = NULL;
+            char queued_text[1024];
+            if (g_tts_text[0]) {
+                strncpy(queued_text, g_tts_text, sizeof(queued_text) - 1);
+                queued_text[sizeof(queued_text) - 1] = '\0';
+                g_tts_text[0] = '\0';
+                text = queued_text;
+            } else {
+                text = ui_get_full_response();
+            }
+            if (!text || !text[0]) {
+                if (!g_tts_pending) {
+                    app_set_state(UI_STATE_IDLE);
+                    break;
+                }
+                continue;
+            }
+
+            app_set_state(UI_STATE_TTS_LOADING);
+            ESP_LOGI(TAG, "TTS: speaking %.60s%s", text, strlen(text) > 60 ? "..." : "");
+
+            app_turn_mark_tts_start();
+            wake_word_pause();
+            esp_err_t err = tts_speak(text);
+            wake_word_resume();
+            app_turn_mark_tts_done();
+
+            if (err != ESP_OK) {
+                ESP_LOGE(TAG, "TTS failed: %s", esp_err_to_name(err));
+                app_set_state(UI_STATE_RESPONSE);
+                ui_set_response(NULL, text);  /* Restore response display */
+                ui_set_status_message("TTS unavailable");
+                vTaskDelay(pdMS_TO_TICKS(2000));
+                g_continue_listening = false;
+            }
+
             app_set_state(UI_STATE_IDLE);
-            continue;
+
+            if (!g_tts_pending) break;
         }
-
-        app_set_state(UI_STATE_TTS_LOADING);
-        ESP_LOGI(TAG, "TTS: speaking %.60s%s", text, strlen(text) > 60 ? "..." : "");
-
-        wake_word_pause();
-        esp_err_t err = tts_speak(text);
-        wake_word_resume();
-
-        /* Clear notification text after speaking */
-        if (is_notification) g_tts_text[0] = '\0';
-
-        if (err != ESP_OK) {
-            ESP_LOGE(TAG, "TTS failed: %s", esp_err_to_name(err));
-            /* Show small error in sub_label without wiping the response */
-            app_set_state(UI_STATE_RESPONSE);
-            ui_set_response(NULL, text);  /* Restore response display */
-            ui_set_status_message("TTS unavailable");
-            vTaskDelay(pdMS_TO_TICKS(2000));
-            g_continue_listening = false;
-        }
-
-        app_set_state(UI_STATE_IDLE);
 
         /* If OpenClaw expects a follow-up reply, auto-trigger recording */
-        if (g_continue_listening) {
+        if (g_continue_listening && !g_tts_pending && !tts_is_playing()) {
             g_continue_listening = false;
             ESP_LOGI(TAG, "Auto-listen: continuing conversation");
             vTaskDelay(pdMS_TO_TICKS(400));  /* brief pause before listening */

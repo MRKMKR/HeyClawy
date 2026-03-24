@@ -40,11 +40,18 @@ You talk to the device, it sends your request to OpenClaw in real time, and spea
 - USB cable for flashing
 - One of the supported devices (SenseCAP Watcher, M5StickCPlus2, Waveshare Audio Board)
 
-### OpenClaw machine (same LAN as the device)
+### OpenClaw machine
 
-- OpenClaw gateway running and reachable (`ws://<host>:18789`)
+- OpenClaw gateway running
 - STT service (faster-whisper HTTP endpoint, default port `5051`)
 - TTS service (OpenAI-compatible EdgeTTS endpoint, default port `5050`) 
+
+For the intended network layout, see [docs/openclaw-network-model.md](docs/openclaw-network-model.md).
+The short version is:
+
+- OpenClaw gateway stays loopback-only on the host
+- Tailscale exposes the remote control path
+- ESP32-facing helpers can stay on the LAN as separate services
 
 ### Simple EdgeTTS installation on the OpenClaw machine
 

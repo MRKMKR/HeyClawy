@@ -15,6 +15,7 @@
 #include "esp_log.h"
 #include "esp_http_client.h"
 #include "esp_heap_caps.h"
+#include "esp_timer.h"
 #include <string.h>
 #include <stdlib.h>
 
@@ -31,6 +32,7 @@ static struct {
     char model[32];
     bool playing;
     bool stop_requested;
+    tts_stats_t last_stats;
 } s_tts;
 
 static int play_mp3_frames(mp3dec_t *dec, uint8_t *mp3_buf, size_t *buf_len,
@@ -119,6 +121,9 @@ esp_err_t tts_speak(const char *text)
         ESP_LOGW(TAG, "Already playing, stopping first");
         tts_stop();
     }
+
+    memset(&s_tts.last_stats, 0, sizeof(s_tts.last_stats));
+    int64_t request_start_us = esp_timer_get_time();
 
     /* Detect Hebrew text and use appropriate voice */
     const char *voice = s_tts.voice;
@@ -250,6 +255,7 @@ esp_err_t tts_speak(const char *text)
 
     int content_length = esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
+    s_tts.last_stats.request_to_headers_ms = (uint32_t)((esp_timer_get_time() - request_start_us) / 1000);
     ESP_LOGI(TAG, "TTS response: status=%d content_length=%d", status, content_length);
 
     if (status != 200) {
@@ -301,7 +307,7 @@ esp_err_t tts_speak(const char *text)
     size_t mp3_len = 0;
     size_t total_mp3_bytes = 0;
     size_t total_pcm_samples = 0;
-    size_t first_audio_ms = 0;
+    int64_t first_audio_us = 0;
     bool first_frame = true;
     int src_rate = 24000;  /* default, updated from first frame */
     int idle_reads = 0;
@@ -315,8 +321,8 @@ esp_err_t tts_speak(const char *text)
                 err = ESP_FAIL;
                 break;
             }
-            if (frames > 0 && first_audio_ms == 0) {
-                first_audio_ms = (size_t)(esp_log_timestamp());
+            if (frames > 0 && first_audio_us == 0) {
+                first_audio_us = esp_timer_get_time();
             }
         }
 
@@ -330,8 +336,8 @@ esp_err_t tts_speak(const char *text)
             idle_reads++;
             int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
                                          &src_rate, &first_frame, &total_pcm_samples);
-            if (frames > 0 && first_audio_ms == 0) {
-                first_audio_ms = (size_t)(esp_log_timestamp());
+            if (frames > 0 && first_audio_us == 0) {
+                first_audio_us = esp_timer_get_time();
             }
             if (idle_reads > 1) break;
             continue;
@@ -343,8 +349,8 @@ esp_err_t tts_speak(const char *text)
 
         int frames = play_mp3_frames(dec, mp3_buf, &mp3_len, pcm, resamp,
                                      &src_rate, &first_frame, &total_pcm_samples);
-        if (frames > 0 && first_audio_ms == 0) {
-            first_audio_ms = (size_t)(esp_log_timestamp());
+        if (frames > 0 && first_audio_us == 0) {
+            first_audio_us = esp_timer_get_time();
         }
     }
 
@@ -356,8 +362,20 @@ esp_err_t tts_speak(const char *text)
         }
     }
 
-    ESP_LOGI(TAG, "TTS playback complete: %u MP3 bytes -> %u PCM samples",
-             (unsigned)total_mp3_bytes, (unsigned)total_pcm_samples);
+    s_tts.last_stats.total_mp3_bytes = total_mp3_bytes;
+    s_tts.last_stats.total_pcm_samples = total_pcm_samples;
+    s_tts.last_stats.total_ms = (uint32_t)((esp_timer_get_time() - request_start_us) / 1000);
+    if (first_audio_us > 0) {
+        s_tts.last_stats.request_to_first_audio_ms =
+            (uint32_t)((first_audio_us - request_start_us) / 1000);
+    }
+    ESP_LOGI(TAG,
+             "TTS playback complete: headers=%ums first_audio=%ums total=%ums mp3=%u pcm=%u",
+             (unsigned)s_tts.last_stats.request_to_headers_ms,
+             (unsigned)s_tts.last_stats.request_to_first_audio_ms,
+             (unsigned)s_tts.last_stats.total_ms,
+             (unsigned)total_mp3_bytes,
+             (unsigned)total_pcm_samples);
 
     free(dec);
     free(resamp);
@@ -386,4 +404,10 @@ void tts_stop(void)
 bool tts_is_playing(void)
 {
     return s_tts.playing;
+}
+
+void tts_get_last_stats(tts_stats_t *out)
+{
+    if (!out) return;
+    *out = s_tts.last_stats;
 }
